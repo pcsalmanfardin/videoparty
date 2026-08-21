@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VideoParty — একসাথে ভিডিও দেখুন</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ===== JOIN SCREEN ===== -->
+<div id="join-screen" class="screen">
+  <div class="join-card">
+    <h1>🎬 VideoParty</h1>
+    <p class="subtitle">বন্ধুর সাথে একসাথে ভিডিও দেখুন, ভয়েসে কথা বলুন, চ্যাট করুন।</p>
+
+    <label>তোমার নাম</label>
+    <input id="name-input" type="text" placeholder="যেমন: Rafi" maxlength="30" />
+
+    <label>রুম কোড</label>
+    <input id="room-input" type="text" placeholder="রুম কোড লিখুন বা খালি রাখুন নতুন রুমের জন্য" maxlength="20" />
+
+    <div class="join-buttons">
+      <button id="create-room-btn" class="btn primary">নতুন রুম তৈরি করুন</button>
+      <button id="join-room-btn" class="btn secondary">রুমে যোগ দিন</button>
+    </div>
+    <p id="join-error" class="error"></p>
+  </div>
+</div>
+
+<!-- ===== ROOM SCREEN ===== -->
+<div id="room-screen" class="screen hidden">
+  <header class="room-header">
+    <div class="room-info">
+      <strong id="room-id-display"></strong>
+      <button id="copy-room-btn" class="btn tiny">রুম কোড কপি করুন</button>
+      <span id="peer-status" class="peer-status">অপেক্ষা করছে বন্ধুর জন্য...</span>
+    </div>
+    <div class="voice-controls">
+      <button id="mic-btn" class="btn mic off">🎤 ভয়েস চালু করুন</button>
+    </div>
+  </header>
+
+  <main class="room-main">
+    <section class="video-section">
+      <div id="video-picker" class="video-picker">
+        <h3>ভিডিও যোগ করুন</h3>
+        <div class="picker-row">
+          <input type="file" id="file-input" accept="video/*" />
+          <label for="file-input" class="btn small">📁 ভিডিও ফাইল আপলোড</label>
+        </div>
+        <div class="picker-row">
+          <input type="text" id="link-input" placeholder="YouTube বা ভিডিও লিংক পেস্ট করুন" />
+          <button id="link-btn" class="btn small">▶️ লোড করুন</button>
+        </div>
+        <p id="upload-progress" class="progress-text"></p>
+      </div>
+
+      <div id="player-area" class="player-area hidden">
+        <video id="html5-player" controls playsinline></video>
+        <div id="youtube-player"></div>
+        <div id="link-fallback" class="link-fallback hidden">
+          <p>এই লিংকটি ব্রাউজারে সরাসরি প্লে করা যাচ্ছে না। নিচের বাটনে ক্লিক করে দুইজনেই একসাথে ওপেন করুন:</p>
+          <a id="link-fallback-anchor" href="#" target="_blank" class="btn small">লিংক খুলুন</a>
+        </div>
+      </div>
+
+      <div id="reaction-layer" class="reaction-layer"></div>
+    </section>
+
+    <aside class="chat-section">
+      <div class="emoji-bar">
+        <button class="emoji-btn" data-emoji="😂">😂</button>
+        <button class="emoji-btn" data-emoji="❤️">❤️</button>
+        <button class="emoji-btn" data-emoji="😮">😮</button>
+        <button class="emoji-btn" data-emoji="👏">👏</button>
+        <button class="emoji-btn" data-emoji="🔥">🔥</button>
+        <button class="emoji-btn" data-emoji="😢">😢</button>
+      </div>
+      <div id="chat-log" class="chat-log"></div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" placeholder="মেসেজ লিখুন..." autocomplete="off" maxlength="1000" />
+        <button type="submit" class="btn small">পাঠান</button>
+      </form>
+    </aside>
+  </main>
+</div>
+
+<audio id="remote-audio" autoplay></audio>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script src="client.js"></script>
+</body>
+</html>
