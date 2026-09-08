@@ -159,11 +159,15 @@ socket.on("peer-joined", ({ id, name }) => {
   maybeStartNegotiation();
 });
 
-socket.on("peer-left", ({ id }) => {
+socket.on("peer-left", ({ id, name }) => {
   if (id === otherPeerId) {
     otherPeerId = null;
     setPeerStatus(false);
-    addSystemMessage("বন্ধু রুম থেকে বেরিয়ে গেছে।");
+    const leftName = name || "বন্ধু";
+    addSystemMessage(`${leftName} রুম থেকে বেরিয়ে গেছে। ভিডিও পজ করা হয়েছে — চাইলে আবার চালু করুন।`);
+    if (currentVideo) {
+      showFloatingMessage("সিস্টেম", `${leftName} চলে গেছে — ভিডিও পজ করা হয়েছে`);
+    }
     teardownPeerConnection();
   }
 });
