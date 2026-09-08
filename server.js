@@ -427,12 +427,27 @@ io.on("connection", (socket) => {
     const room = rooms.get(currentRoom);
     if (!room) return;
     room.users.delete(socket.id);
-    socket.to(currentRoom).emit("peer-left", { id: socket.id });
+    socket.to(currentRoom).emit("peer-left", { id: socket.id, name: currentName });
+
     if (room.users.size === 0) {
       // Persist final state before dropping the in-memory copy — B2 (if enabled)
       // keeps the video/playback around so the room can be restored later.
       await saveRoomState(currentRoom, room);
       rooms.delete(currentRoom);
+    } else {
+      // Someone left mid-session (network drop, closed tab, etc.) — auto-pause
+      // for whoever remains, computed at the correct current position, rather
+      // than leaving them watching alone while the clock silently keeps going.
+      const elapsed = room.playback.isPlaying
+        ? (Date.now() - room.playback.updatedAt) / 1000
+        : 0;
+      room.playback = {
+        isPlaying: false,
+        time: room.playback.time + elapsed,
+        updatedAt: Date.now(),
+      };
+      io.to(currentRoom).emit("playback-update", room.playback);
+      saveRoomState(currentRoom, room); // fire-and-forget
     }
   });
 });
