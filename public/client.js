@@ -14,7 +14,6 @@ const roomBtn = document.getElementById("room-btn");
 const joinError = document.getElementById("join-error");
 
 const roomIdDisplay = document.getElementById("room-id-display");
-const copyRoomBtn = document.getElementById("copy-room-btn");
 const peerStatus = document.getElementById("peer-status");
 const micBtn = document.getElementById("mic-btn");
 
@@ -142,11 +141,40 @@ function setPeerStatus(connected) {
   }
 }
 
-copyRoomBtn.addEventListener("click", () => {
-  navigator.clipboard.writeText(myRoom).then(() => {
-    copyRoomBtn.textContent = "কপি হয়েছে ✓";
-    setTimeout(() => (copyRoomBtn.textContent = "রুম কোড কপি করুন"), 1500);
-  });
+// Tapping the room code itself copies it (no separate button needed).
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    if (document.execCommand("copy")) done();
+  } catch (err) {
+    /* nothing more we can do */
+  }
+  ta.remove();
+}
+
+function copyRoomCode() {
+  const done = () => {
+    roomIdDisplay.classList.add("copied");
+    setTimeout(() => roomIdDisplay.classList.remove("copied"), 1500);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(myRoom).then(done).catch(() => fallbackCopy(myRoom, done));
+  } else {
+    fallbackCopy(myRoom, done);
+  }
+}
+
+roomIdDisplay.addEventListener("click", copyRoomCode);
+roomIdDisplay.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    copyRoomCode();
+  }
 });
 
 // ===================== PEER PRESENCE =====================
@@ -502,13 +530,22 @@ const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
+// The mic button is icon-only to save header space; keep its label for
+// screen readers/tooltips in sync with its state.
+function setMicUi(on) {
+  micBtn.textContent = on ? "🎙️" : "🎤";
+  const label = on ? "ভয়েস বন্ধ করুন" : "ভয়েস চালু করুন";
+  micBtn.title = label;
+  micBtn.setAttribute("aria-label", label);
+  micBtn.classList.toggle("on", on);
+}
+
 micBtn.addEventListener("click", async () => {
   if (!micOn) {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micOn = true;
-      micBtn.textContent = "🎙️ ভয়েস চালু আছে";
-      micBtn.classList.add("on");
+      setMicUi(true);
       ensurePeerConnection();
       localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
     } catch (err) {
@@ -516,8 +553,7 @@ micBtn.addEventListener("click", async () => {
     }
   } else {
     micOn = false;
-    micBtn.textContent = "🎤 ভয়েস চালু করুন";
-    micBtn.classList.remove("on");
+    setMicUi(false);
     if (localStream) {
       localStream.getTracks().forEach((t) => t.stop());
       localStream = null;
