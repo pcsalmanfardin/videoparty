@@ -127,6 +127,9 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh; /* visible viewport, excludes the mobile browser's address bar */
+  min-height: 0;  /* override .screen { min-height: 100vh } which is too tall on mobile */
+  overflow: hidden;
 }
 
 .room-header {
@@ -412,6 +415,7 @@ body.no-scroll {
 }
 .chat-form input {
   flex: 1;
+  min-width: 0;
   padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid var(--line);
@@ -422,8 +426,37 @@ body.no-scroll {
 }
 
 @media (max-width: 860px) {
-  .room-main { grid-template-columns: 1fr; grid-template-rows: auto 260px; }
-  .chat-section { border-left: none; border-top: 1px solid var(--line); }
+  .room-header { padding: 8px 12px; gap: 8px; flex-wrap: wrap; }
+  .room-info { flex-wrap: wrap; gap: 8px; }
+  .room-main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .video-section { padding: 12px; }
+  .chat-section {
+    border-left: none;
+    border-top: 1px solid var(--line);
+    height: 260px;                    /* fallback */
+    height: clamp(210px, 38dvh, 320px);
+  }
+  .emoji-bar { padding: 8px 12px; }
+  .chat-form { padding: 8px 12px; }
+}
+
+/* Phones held sideways: put chat beside the video instead of under it. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .room-header { padding: 6px 12px; flex-wrap: nowrap; }
+  .room-main {
+    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .chat-section {
+    height: auto;
+    border-left: 1px solid var(--line);
+    border-top: none;
+  }
+  .emoji-bar { flex-wrap: wrap; gap: 4px; padding: 6px 8px; }
+  .emoji-btn { padding: 4px 6px; font-size: 16px; }
 }
 
 /* Respect reduced motion */
