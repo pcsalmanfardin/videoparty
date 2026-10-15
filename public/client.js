@@ -10,8 +10,7 @@ const joinScreen = document.getElementById("join-screen");
 const roomScreen = document.getElementById("room-screen");
 const nameInput = document.getElementById("name-input");
 const roomInput = document.getElementById("room-input");
-const createRoomBtn = document.getElementById("create-room-btn");
-const joinRoomBtn = document.getElementById("join-room-btn");
+const roomBtn = document.getElementById("room-btn");
 const joinError = document.getElementById("join-error");
 
 const roomIdDisplay = document.getElementById("room-id-display");
@@ -86,18 +85,18 @@ function randomRoomCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
-createRoomBtn.addEventListener("click", () => {
-  const code = roomInput.value.trim() || randomRoomCode();
+// One button for both cases: the server joins the room if this code already
+// exists, or creates it on the spot if it doesn't. Leaving the code empty
+// generates a fresh random code. Codes are upper-cased so "abc" and "ABC"
+// can't accidentally become two different rooms.
+function submitRoom() {
+  const code = roomInput.value.trim().toUpperCase() || randomRoomCode();
   attemptJoin(code);
-});
+}
 
-joinRoomBtn.addEventListener("click", () => {
-  const code = roomInput.value.trim();
-  if (!code) {
-    joinError.textContent = "রুমে যোগ দিতে একটা রুম কোড লিখুন।";
-    return;
-  }
-  attemptJoin(code);
+roomBtn.addEventListener("click", submitRoom);
+roomInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitRoom();
 });
 
 function attemptJoin(roomId) {
