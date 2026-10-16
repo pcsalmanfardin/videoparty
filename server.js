@@ -353,7 +353,7 @@ io.on("connection", (socket) => {
   let currentRoom = null;
   let currentName = null;
 
-  socket.on("join-room", async ({ roomId, name }, ack) => {
+  socket.on("join-room", async ({ roomId, name, clientId }, ack) => {
     if (!siteLive) {
       return ack && ack({ ok: false, error: "এই ওয়াচ পার্টি এই মুহূর্তে বন্ধ আছে।" });
     }
@@ -361,14 +361,38 @@ io.on("connection", (socket) => {
       return ack && ack({ ok: false, error: "Invalid room id" });
     }
     const room = await getOrLoadRoom(roomId);
-    if (room.users.size >= 2) {
+
+    // A phone that slept in the background comes back with a brand-new socket,
+    // while the server may still be holding the old, dead one (it only notices
+    // after its ping timeout). Treat a join from the same person (same clientId)
+    // as a replacement of that stale entry instead of counting two people.
+    const staleSocketIds = [];
+    if (typeof clientId === "string" && clientId) {
+      for (const [sid, u] of room.users) {
+        if (sid !== socket.id && u.clientId === clientId) staleSocketIds.push(sid);
+      }
+    }
+    for (const sid of staleSocketIds) room.users.delete(sid);
+
+    const othersInRoom = [...room.users.keys()].filter((sid) => sid !== socket.id).length;
+    if (othersInRoom >= 2) {
       return ack && ack({ ok: false, error: "This room already has 2 people in it." });
     }
 
     currentRoom = roomId;
     currentName = (name || "Guest").slice(0, 30);
-    room.users.set(socket.id, { name: currentName });
+    room.users.set(socket.id, {
+      name: currentName,
+      clientId: typeof clientId === "string" ? clientId.slice(0, 100) : null,
+    });
     socket.join(roomId);
+
+    // Drop the stale connections for real. Their disconnect handlers see they
+    // are no longer in room.users and skip the "left the room" / auto-pause logic.
+    for (const sid of staleSocketIds) {
+      const stale = io.sockets.sockets.get(sid);
+      if (stale) stale.disconnect(true);
+    }
 
     ack &&
       ack({
@@ -422,30 +446,41 @@ io.on("connection", (socket) => {
     socket.to(currentRoom).emit("webrtc-signal", { from: socket.id, ...data });
   });
 
+  // Lets a client that just woke up check whether its connection is really
+  // alive (a phone's socket can look "connected" long after the link died).
+  socket.on("hb", (ack) => {
+    if (typeof ack === "function") ack();
+  });
+
   socket.on("disconnect", async () => {
     if (!currentRoom) return;
     const room = rooms.get(currentRoom);
     if (!room) return;
+    // This socket was already replaced by a newer connection of the same person
+    // (see join-room) — so this is not a real departure. Don't announce it or pause.
+    if (!room.users.has(socket.id)) return;
     room.users.delete(socket.id);
     socket.to(currentRoom).emit("peer-left", { id: socket.id, name: currentName });
 
+    // Someone left (network drop, closed tab, etc.) — freeze playback at the
+    // correct position rather than letting the saved clock silently keep
+    // running. Done even when the room becomes empty, so that the state saved
+    // for later doesn't claim the video kept playing while nobody was there.
+    const elapsed = room.playback.isPlaying
+      ? (Date.now() - room.playback.updatedAt) / 1000
+      : 0;
+    room.playback = {
+      isPlaying: false,
+      time: room.playback.time + elapsed,
+      updatedAt: Date.now(),
+    };
+
     if (room.users.size === 0) {
-      // Persist final state before dropping the in-memory copy — B2 (if enabled)
+      // Persist final state before dropping the in-memory copy — B2/R2 (if enabled)
       // keeps the video/playback around so the room can be restored later.
       await saveRoomState(currentRoom, room);
       rooms.delete(currentRoom);
     } else {
-      // Someone left mid-session (network drop, closed tab, etc.) — auto-pause
-      // for whoever remains, computed at the correct current position, rather
-      // than leaving them watching alone while the clock silently keeps going.
-      const elapsed = room.playback.isPlaying
-        ? (Date.now() - room.playback.updatedAt) / 1000
-        : 0;
-      room.playback = {
-        isPlaying: false,
-        time: room.playback.time + elapsed,
-        updatedAt: Date.now(),
-      };
       io.to(currentRoom).emit("playback-update", room.playback);
       saveRoomState(currentRoom, room); // fire-and-forget
     }
