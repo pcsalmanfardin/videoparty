@@ -2,6 +2,30 @@
 
 const socket = io();
 
+// A stable identity for this browser tab. It survives socket reconnects (and a
+// reload of the same tab), so the server can tell "the same person coming back
+// after their phone slept" apart from "a different person trying to join".
+const clientId = (() => {
+  const fresh = () =>
+    window.crypto && crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2) + Date.now().toString(36);
+  try {
+    let id = sessionStorage.getItem("vp_client_id");
+    if (!id) {
+      id = fresh();
+      sessionStorage.setItem("vp_client_id", id);
+    }
+    return id;
+  } catch (err) {
+    return fresh();
+  }
+})();
+
+// True once we've successfully joined a room; used to rejoin it automatically
+// whenever the connection drops and comes back.
+let inRoom = false;
+
 // ---- DOM refs ----
 const offlineScreen = document.getElementById("offline-screen");
 const offlineRetryBtn = document.getElementById("offline-retry-btn");
@@ -73,6 +97,7 @@ offlineRetryBtn.addEventListener("click", () => {
 initApp();
 
 socket.on("site-offline", () => {
+  inRoom = false;
   joinScreen.classList.add("hidden");
   document.getElementById("room-screen").classList.add("hidden");
   offlineScreen.classList.remove("hidden");
@@ -101,7 +126,7 @@ roomInput.addEventListener("keydown", (e) => {
 function attemptJoin(roomId) {
   myName = (nameInput.value.trim() || "Guest").slice(0, 30);
   joinError.textContent = "";
-  socket.emit("join-room", { roomId, name: myName }, (res) => {
+  socket.emit("join-room", { roomId, name: myName, clientId }, (res) => {
     if (!res.ok) {
       joinError.textContent = res.error || "রুমে যোগ দেওয়া যায়নি।";
       return;
@@ -112,6 +137,7 @@ function attemptJoin(roomId) {
 }
 
 function enterRoom(state) {
+  inRoom = true;
   joinScreen.classList.add("hidden");
   roomScreen.classList.remove("hidden");
   roomIdDisplay.textContent = myRoom;
@@ -180,6 +206,9 @@ roomIdDisplay.addEventListener("keydown", (e) => {
 // ===================== PEER PRESENCE =====================
 
 socket.on("peer-joined", ({ id, name }) => {
+  // If the friend came back on a brand-new connection without us ever seeing
+  // them leave, our old voice link to them is dead — drop it so it gets rebuilt.
+  if (otherPeerId && otherPeerId !== id) teardownPeerConnection();
   otherPeerId = id;
   setPeerStatus(true);
   addSystemMessage(`${name} রুমে যোগ দিয়েছে।`);
@@ -198,6 +227,101 @@ socket.on("peer-left", ({ id, name }) => {
     teardownPeerConnection();
   }
 });
+
+// ===================== RECONNECT / REJOIN =====================
+// When a phone sleeps or the network drops, the connection to the server dies
+// and later comes back as a brand-new socket — which the server knows nothing
+// about. Without rejoining, the screen still *looks* like we're in the room but
+// play/pause, chat and voice silently go nowhere. So: rejoin automatically.
+
+socket.on("disconnect", (reason) => {
+  if (!inRoom) return;
+  peerStatus.classList.remove("connected");
+  if (reason === "io server disconnect") {
+    // The server closed this connection on purpose (e.g. the same room was
+    // opened again in a duplicated tab). Don't fight over the room.
+    inRoom = false;
+    peerStatus.textContent = "এই ট্যাবের সংযোগ বন্ধ হয়েছে";
+    addSystemMessage("একই রুমে অন্য কোথাও যোগ দেওয়ায় এখানকার সংযোগ বন্ধ হয়েছে। পেজ রিলোড করে আবার ঢুকুন।");
+    return;
+  }
+  peerStatus.textContent = "সংযোগ বিচ্ছিন্ন, আবার যুক্ত হওয়ার চেষ্টা চলছে…";
+});
+
+socket.on("connect", () => {
+  if (inRoom) rejoinRoom();
+});
+
+function rejoinRoom() {
+  socket.emit("join-room", { roomId: myRoom, name: myName, clientId }, (res) => {
+    if (!res || !res.ok) {
+      setPeerStatus(false);
+      addSystemMessage((res && res.error) || "রুমে আবার যুক্ত হওয়া যায়নি।");
+      return;
+    }
+    const others = (res.users || []).filter((u) => u.id !== socket.id);
+    otherPeerId = others.length > 0 ? others[0].id : null;
+    setPeerStatus(others.length > 0);
+    addSystemMessage("সংযোগ ফিরে এসেছে — আবার রুমে যুক্ত হয়েছেন ✅");
+
+    // Re-sync with the room's current state, without reloading a video we
+    // already have (that would throw away what's been buffered).
+    if (res.video && (!currentVideo || currentVideo.src !== res.video.src)) {
+      loadVideo(res.video, true);
+    }
+    if (res.video && res.playback) applyRemotePlayback(res.playback);
+
+    restoreVoiceAfterReconnect();
+  });
+}
+
+// After a reconnect the old voice link is dead and, on phones, the microphone
+// track is often ended too. Rebuild both if voice was on.
+async function restoreVoiceAfterReconnect() {
+  if (!micOn) return;
+  teardownPeerConnection();
+  const trackDead = !localStream || localStream.getTracks().every((t) => t.readyState === "ended");
+  if (trackDead) {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      micOn = false;
+      localStream = null;
+      setMicUi(false);
+      addSystemMessage("মাইক আবার চালু করা যায়নি, ভয়েস বন্ধ হয়েছে। মাইক বাটনে চেপে আবার চালু করুন।");
+      return;
+    }
+  }
+  if (otherPeerId) {
+    ensurePeerConnection();
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+  }
+}
+
+// When the tab comes back to the front (or the network returns), check that the
+// connection is really alive. A phone's socket can look "connected" for up to a
+// minute after the link actually died; a quick probe finds out immediately.
+let probingConnection = false;
+function checkConnectionHealth() {
+  if (!inRoom || probingConnection) return;
+  if (!socket.connected) {
+    socket.connect();
+    return;
+  }
+  probingConnection = true;
+  socket.timeout(4000).emit("hb", (err) => {
+    probingConnection = false;
+    if (err) {
+      socket.disconnect();
+      socket.connect(); // fires "connect" → rejoinRoom()
+    }
+  });
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") checkConnectionHealth();
+});
+window.addEventListener("online", checkConnectionHealth);
 
 // ===================== VIDEO SELECTION =====================
 
