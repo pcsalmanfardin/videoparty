@@ -443,14 +443,40 @@ body.no-scroll {
   .peer-status { font-size: 11.5px; line-height: 1.25; min-width: 0; }
   .room-main {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
+    /* The video takes only the height it needs; the chat gets everything else,
+       but never less than 150px — so the message box is always on screen. */
+    grid-template-rows: auto minmax(150px, 1fr);
   }
-  .video-section { padding: 12px; }
+
+  /* Edge-to-edge video, sitting directly under the header: no outer padding,
+     no film-strip frame, no side margins. */
+  .video-section { padding: 0; }
+  .video-picker { margin: 12px; }
+  .player-area {
+    flex: none;               /* as tall as the video, not stretched to fill the area */
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: #000;
+    background-image: none;
+  }
+  .player-area::before, .player-area::after { display: none; }
+  #html5-player, #youtube-player, #youtube-player iframe {
+    width: 100%;
+    margin: 0;
+    border-radius: 0;
+    max-height: 70vh;                    /* fallback */
+    /* never so tall that the chat (header ≈ 50px + chat ≥ 150px) gets pushed off screen */
+    max-height: calc(100dvh - 200px);
+  }
+  #youtube-player { aspect-ratio: 16 / 9; height: auto; } /* the API's fixed 480px height would be far too tall */
+  .link-fallback { width: auto; margin: 20px 12px; }
+  .fullscreen-btn { top: 8px; right: 8px; }
+
   .chat-section {
     border-left: none;
     border-top: 1px solid var(--line);
-    height: 260px;                    /* fallback */
-    height: clamp(170px, 38dvh, 320px);
+    height: auto;
   }
   .emoji-bar { padding: 8px 12px; }
   .chat-form { padding: 8px 12px; }
@@ -467,6 +493,11 @@ body.no-scroll {
     height: auto;
     border-left: 1px solid var(--line);
     border-top: none;
+  }
+  /* Sideways there's no chat underneath to protect, so let the video use the height. */
+  #html5-player, #youtube-player, #youtube-player iframe {
+    max-height: 70vh;                    /* fallback */
+    max-height: calc(100dvh - 60px);
   }
   .emoji-bar { flex-wrap: wrap; gap: 4px; padding: 6px 8px; }
   .emoji-btn { padding: 4px 6px; font-size: 16px; }
