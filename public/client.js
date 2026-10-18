@@ -508,24 +508,6 @@ chatForm.addEventListener("submit", (e) => {
   chatInput.value = "";
 });
 
-// "Typing mode": while the on-screen keyboard is open the visible height is
-// tiny, so the page (see body.typing in style.css) gives the space to the video
-// and hides the chat history. The keyboard closing again — even without the
-// field losing focus, e.g. the back gesture — ends it.
-let heightBeforeTyping = 0;
-function enterTypingMode() {
-  if (!document.body.classList.contains("typing")) heightBeforeTyping = window.innerHeight;
-  document.body.classList.add("typing");
-}
-chatInput.addEventListener("focus", enterTypingMode);
-chatInput.addEventListener("click", enterTypingMode);
-chatInput.addEventListener("blur", () => document.body.classList.remove("typing"));
-window.addEventListener("resize", () => {
-  if (document.body.classList.contains("typing") && window.innerHeight >= heightBeforeTyping - 40) {
-    document.body.classList.remove("typing");
-  }
-});
-
 socket.on("chat-message", ({ name, text, at }) => {
   addChatMessage(name, text, at);
   showFloatingMessage(name, text);
