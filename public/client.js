@@ -206,9 +206,10 @@ roomIdDisplay.addEventListener("keydown", (e) => {
 // ===================== PEER PRESENCE =====================
 
 socket.on("peer-joined", ({ id, name }) => {
-  // If the friend came back on a brand-new connection without us ever seeing
-  // them leave, our old voice link to them is dead — drop it so it gets rebuilt.
-  if (otherPeerId && otherPeerId !== id) teardownPeerConnection();
+  // The friend is (re)joining: any voice link we hold is stale — either to their
+  // previous connection, or created while they were away (so its offer reached
+  // nobody). Drop it; maybeStartNegotiation() below starts a fresh one.
+  teardownPeerConnection();
   otherPeerId = id;
   setPeerStatus(true);
   addSystemMessage(`${name} রুমে যোগ দিয়েছে।`);
@@ -292,10 +293,7 @@ async function restoreVoiceAfterReconnect() {
       return;
     }
   }
-  if (otherPeerId) {
-    ensurePeerConnection();
-    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
-  }
+  startVoiceIfNeeded();
 }
 
 // When the tab comes back to the front (or the network returns), check that the
@@ -510,6 +508,24 @@ chatForm.addEventListener("submit", (e) => {
   chatInput.value = "";
 });
 
+// "Typing mode": while the on-screen keyboard is open the visible height is
+// tiny, so the page (see body.typing in style.css) gives the space to the video
+// and hides the chat history. The keyboard closing again — even without the
+// field losing focus, e.g. the back gesture — ends it.
+let heightBeforeTyping = 0;
+function enterTypingMode() {
+  if (!document.body.classList.contains("typing")) heightBeforeTyping = window.innerHeight;
+  document.body.classList.add("typing");
+}
+chatInput.addEventListener("focus", enterTypingMode);
+chatInput.addEventListener("click", enterTypingMode);
+chatInput.addEventListener("blur", () => document.body.classList.remove("typing"));
+window.addEventListener("resize", () => {
+  if (document.body.classList.contains("typing") && window.innerHeight >= heightBeforeTyping - 40) {
+    document.body.classList.remove("typing");
+  }
+});
+
 socket.on("chat-message", ({ name, text, at }) => {
   addChatMessage(name, text, at);
   showFloatingMessage(name, text);
@@ -669,6 +685,7 @@ micBtn.addEventListener("click", async () => {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micOn = true;
+      voiceRetries = 0;
       setMicUi(true);
       ensurePeerConnection();
       localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
@@ -686,47 +703,103 @@ micBtn.addEventListener("click", async () => {
   }
 });
 
+let voiceRetries = 0;
+let voiceWatchdog = null;
+let politeOfferTimer = null;
+
 function ensurePeerConnection() {
   if (pc) return;
-  pc = new RTCPeerConnection(rtcConfig);
+  const conn = new RTCPeerConnection(rtcConfig);
+  pc = conn;
 
-  pc.onicecandidate = (e) => {
-    if (e.candidate) socket.emit("webrtc-signal", { type: "candidate", candidate: e.candidate });
+  conn.onicecandidate = (e) => {
+    if (e.candidate && pc === conn) socket.emit("webrtc-signal", { type: "candidate", candidate: e.candidate });
   };
 
-  pc.ontrack = (e) => {
+  conn.ontrack = (e) => {
     remoteAudio.srcObject = e.streams[0];
   };
 
-  pc.onnegotiationneeded = async () => {
+  conn.onnegotiationneeded = async () => {
     try {
       makingOffer = true;
-      await pc.setLocalDescription();
-      socket.emit("webrtc-signal", { type: "description", description: pc.localDescription });
+      await conn.setLocalDescription();
+      if (pc === conn) socket.emit("webrtc-signal", { type: "description", description: conn.localDescription });
     } catch (err) {
       console.error(err);
     } finally {
       makingOffer = false;
     }
   };
+
+  conn.onconnectionstatechange = () => {
+    if (pc !== conn) return;
+    if (conn.connectionState === "connected") voiceRetries = 0;
+    else if (conn.connectionState === "failed") rebuildVoice();
+  };
+
+  armVoiceWatchdog();
 }
 
 function teardownPeerConnection() {
+  clearTimeout(voiceWatchdog);
+  clearTimeout(politeOfferTimer);
   if (pc) {
     pc.close();
     pc = null;
   }
+  makingOffer = false;
+  ignoreOffer = false;
+}
+
+// Put my microphone on the connection (if it isn't already there).
+function addLocalTracks() {
+  if (!micOn || !localStream) return;
+  ensurePeerConnection();
+  localStream.getTracks().forEach((track) => {
+    if (!pc.getSenders().some((s) => s.track === track)) pc.addTrack(track, localStream);
+  });
+}
+
+// (Re)start the voice link with the friend after either of us (re)joined.
+// Exactly one side — the "impolite" one — offers immediately; the other waits a
+// moment for that offer. Two sides offering at the very same instant forces one
+// of them to roll back, and Chrome's ICE gathering can get stuck after such a
+// rollback (voice then never connects). If the other side turns out not to
+// offer (e.g. its mic is off), we offer ourselves after the short wait.
+function startVoiceIfNeeded() {
+  if (!micOn || !localStream || !otherPeerId) return;
+  clearTimeout(politeOfferTimer);
+  if (!isPolite()) {
+    addLocalTracks();
+  } else {
+    politeOfferTimer = setTimeout(() => {
+      if (micOn && localStream && otherPeerId) addLocalTracks();
+    }, 1200);
+  }
 }
 
 function maybeStartNegotiation() {
-  // If mic is already on and peer just joined, (re)create connection so negotiation fires.
-  if (micOn && localStream) {
-    ensurePeerConnection();
-    localStream.getTracks().forEach((track) => {
-      const already = pc.getSenders().some((s) => s.track === track);
-      if (!already) pc.addTrack(track, localStream);
-    });
-  }
+  // The friend just (re)joined while my mic may be on.
+  startVoiceIfNeeded();
+}
+
+// Safety net: if the voice link hasn't come up after a while (or has failed),
+// rebuild it — at most twice, so a network that simply blocks direct
+// connections doesn't loop forever.
+function armVoiceWatchdog() {
+  clearTimeout(voiceWatchdog);
+  voiceWatchdog = setTimeout(() => {
+    if (pc && micOn && otherPeerId && pc.connectionState !== "connected") rebuildVoice();
+  }, 9000 + (isPolite() ? 2500 : 0));
+}
+
+function rebuildVoice() {
+  if (!micOn || !otherPeerId || voiceRetries >= 2) return;
+  voiceRetries++;
+  addSystemMessage("ভয়েস সংযোগ জোড়া লাগেনি, আবার চেষ্টা করা হচ্ছে…");
+  teardownPeerConnection();
+  startVoiceIfNeeded();
 }
 
 // "Polite" peer = the one with the lexicographically larger socket id.
@@ -736,29 +809,42 @@ function isPolite() {
   return socket.id > otherPeerId;
 }
 
-socket.on("webrtc-signal", async ({ from, type, description, candidate }) => {
+// Handle voice signals strictly one after another, so e.g. an ICE candidate is
+// never processed while the description it belongs to is still being applied.
+let signalChain = Promise.resolve();
+socket.on("webrtc-signal", (msg) => {
+  signalChain = signalChain
+    .then(() => handleSignal(msg))
+    .catch((err) => console.error("WebRTC signaling error:", err));
+});
+
+async function handleSignal({ from, type, description, candidate }) {
   otherPeerId = otherPeerId || from;
   ensurePeerConnection();
+  const conn = pc;
 
-  try {
-    if (type === "description") {
-      const offerCollision = description.type === "offer" && (makingOffer || pc.signalingState !== "stable");
-      ignoreOffer = !isPolite() && offerCollision;
-      if (ignoreOffer) return;
+  if (type === "description") {
+    const offerCollision = description.type === "offer" && (makingOffer || conn.signalingState !== "stable");
+    ignoreOffer = !isPolite() && offerCollision;
+    if (ignoreOffer) return;
 
-      await pc.setRemoteDescription(description);
-      if (description.type === "offer") {
-        await pc.setLocalDescription();
-        socket.emit("webrtc-signal", { type: "description", description: pc.localDescription });
+    await conn.setRemoteDescription(description);
+    if (description.type === "offer") {
+      // Answering: add my own mic now, so my answer carries my audio too
+      // instead of needing a second round of negotiation afterwards.
+      if (micOn && localStream) {
+        localStream.getTracks().forEach((t) => {
+          if (!conn.getSenders().some((s) => s.track === t)) conn.addTrack(t, localStream);
+        });
       }
-    } else if (type === "candidate") {
-      try {
-        await pc.addIceCandidate(candidate);
-      } catch (err) {
-        if (!ignoreOffer) throw err;
-      }
+      await conn.setLocalDescription();
+      if (pc === conn) socket.emit("webrtc-signal", { type: "description", description: conn.localDescription });
     }
-  } catch (err) {
-    console.error("WebRTC signaling error:", err);
+  } else if (type === "candidate") {
+    try {
+      await conn.addIceCandidate(candidate);
+    } catch (err) {
+      if (!ignoreOffer) throw err;
+    }
   }
-});
+}
